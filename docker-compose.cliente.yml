@@ -1,0 +1,17 @@
+# CLIENTE NORMAL (equipo que NO es uno de los 3 brokers).
+# Requisitos: Docker + Hamachi encendido y dentro de la misma red que los 3 brokers.
+#
+#   docker compose -f docker-compose.cliente.yml --env-file cliente.env run --rm --build cliente
+#   docker compose -f docker-compose.cliente.yml --env-file cliente.env run --rm cliente --rol suma resta   (opcional: además atiende roles)
+#
+# No levanta Kafka ni router: solo se conecta a los 3 brokers y, si uno cae, usa los otros solo.
+services:
+  cliente:
+    build: .
+    image: distribuida-kafka-app:latest
+    stdin_open: true
+    tty: true
+    environment:
+      KAFKA_SERVER: ${IP_PC1:?Falta IP_PC1}:9092,${IP_PC2:?Falta IP_PC2}:9092,${IP_PC3:?Falta IP_PC3}:9092
+      PYTHONUNBUFFERED: "1"
+    entrypoint: ["python", "cliente.py"]
