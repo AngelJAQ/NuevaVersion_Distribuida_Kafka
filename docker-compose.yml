@@ -1,0 +1,118 @@
+# SISTEMA COMPLETO POR EQUIPO (cluster de 3 equipos, Kafka en modo KRaft)
+#
+# Cada equipo (PC1, PC2, PC3) levanta TRES contenedores:
+#   kafka   -> un broker del cluster (cuórum de 3)
+#   router  -> router de la calculadora, con prioridad de relevo = NODE_ID
+#   nodo    -> nodo de cálculo (resuelve los roles de NODO_ROLES)
+# y, cuando quieras, el cliente de consola (chat + calculadora), bajo demanda.
+#
+# En CADA equipo:
+#   1. usa tu archivo: equipo.pc1.env / equipo.pc2.env / equipo.pc3.env (ya traen NODE_ID, MI_IP y las 3 IP de Hamachi)
+#   2. docker compose --env-file equipo.pcN.env up -d --build
+#   3. docker compose --env-file equipo.pcN.env ps
+#   4. cliente interactivo (en cualquier equipo, las veces que quieras):
+#        docker compose --env-file equipo.env run --rm cliente
+#        docker compose --env-file equipo.env run --rm cliente --rol suma resta
+#        docker compose --env-file equipo.env run --rm cliente --rol todos
+#
+# Hasta que haya cuórum (2 de 3 brokers arriba) router y nodo se reinician solos:
+# es normal que en el primer equipo que levantes los veas reintentando unos segundos.
+#
+# Los 3 brokers forman un cuórum: si un equipo se apaga, los otros dos siguen y el liderazgo
+# pasa al siguiente en el ORDEN DE PRIORIDAD (1 -> 2 -> 3). Cuando el prioritario vuelve,
+# recupera el liderazgo solo.
+#
+# Puertos que deben estar abiertos entre los equipos: 9092 (clientes y brokers) y 9093 (cuórum).
+
+x-app: &app
+  build: .
+  image: distribuida-kafka-app:latest
+  environment: &app-env
+    # Los 3 brokers, en orden de prioridad. Tiene prioridad sobre kafka_servidores.txt
+    KAFKA_SERVER: ${IP_PC1:?Falta IP_PC1}:9092,${IP_PC2:?Falta IP_PC2}:9092,${IP_PC3:?Falta IP_PC3}:9092
+    PYTHONUNBUFFERED: "1"
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: kafka-${NODE_ID:?Falta NODE_ID en equipo.env}
+    hostname: kafka-${NODE_ID}
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      CLUSTER_ID: cirCrmlfR1KIv_dQKZVYNA          # igual en los 3 equipos
+      KAFKA_NODE_ID: ${NODE_ID}
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@${IP_PC1:?Falta IP_PC1}:9093,2@${IP_PC2:?Falta IP_PC2}:9093,3@${IP_PC3:?Falta IP_PC3}:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${MI_IP:?Falta MI_IP}:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"    # los tópicos los crea el programa
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Si el broker prioritario vuelve, recupera el liderazgo en ~10 s (por defecto serían 5 min)
+      KAFKA_LEADER_IMBALANCE_CHECK_INTERVAL_SECONDS: 10
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+      # Tiempos más tolerantes para VPN (Hamachi): más latencia que una LAN normal.
+      # Con los valores por defecto (1-2 s) un equipo lento se cae del cuórum.
+      KAFKA_CONTROLLER_QUORUM_REQUEST_TIMEOUT_MS: 4000
+      KAFKA_CONTROLLER_QUORUM_ELECTION_TIMEOUT_MS: 5000
+      KAFKA_CONTROLLER_QUORUM_FETCH_TIMEOUT_MS: 15000
+      KAFKA_BROKER_SESSION_TIMEOUT_MS: 20000
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  router:
+    <<: *app
+    container_name: router-${NODE_ID}
+    hostname: router-${NODE_ID}
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment: *app-env
+    command: python router.py --prioridad ${NODE_ID}
+
+  nodo:
+    <<: *app
+    container_name: nodo-${NODE_ID}
+    hostname: nodo-${NODE_ID}
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment: *app-env
+    command: python nodo_calculo.py ${NODO_ROLES:-todos} --nick nodo-${NODE_ID}
+
+  # Cliente interactivo: no arranca con 'up'; se lanza con 'docker compose run --rm cliente'
+  cliente:
+    <<: *app
+    profiles: ["cliente"]
+    stdin_open: true
+    tty: true
+    environment: *app-env
+    entrypoint: ["python", "cliente.py"]
+
+  # Diagnóstico de red (bajo demanda): prueba los puertos 9092/9093 de los 3 equipos DESDE este equipo
+  #   docker compose --env-file equipo.pcN.env run --rm diagnostico
+  diagnostico:
+    <<: *app
+    profiles: ["diagnostico"]
+    environment:
+      <<: *app-env
+      MI_IP: ${MI_IP:?Falta MI_IP}
+      NODE_ID: ${NODE_ID:?Falta NODE_ID}
+      IP_PC1: ${IP_PC1}
+      IP_PC2: ${IP_PC2}
+      IP_PC3: ${IP_PC3}
+    entrypoint: ["python", "diagnostico.py"]
+
+volumes:
+  kafka-data:

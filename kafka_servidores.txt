@@ -1,0 +1,2 @@
+# IPs de los equipos (Hamachi), en orden de prioridad:
+25.21.176.255:9092,25.20.239.198:9092,25.33.81.76:9092
